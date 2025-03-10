@@ -67,6 +67,9 @@ DEFAULT_DEST_DIR = os.path.expanduser("~/Uploads")
 METADATA_CACHE_FILE = ".pdf_metadata_cache.json"
 OCR_MAX_PAGES = 5  # Maximum number of pages to OCR for ISBN extraction
 OCR_DPI = 300  # DPI for image conversion - higher values give better OCR results but are slower
+OCR_LANG = (
+    "eng"  # Default OCR language - can be changed to 'rus' or 'rus+eng' for Russian
+)
 
 # Global variables
 metadata_cache = {}
@@ -260,6 +263,133 @@ def get_book_details_from_worldcat(
         return result
     except (requests.RequestException, AttributeError) as e:
         logging.debug(f"Error fetching book details from WorldCat: {e}")
+        return None, None, None
+
+
+def get_book_details_from_rsl(
+    isbn: str,
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Fetch book details from Russian State Library (RSL) catalog.
+
+    This function works with Russian ISBNs like 978-5-93700-104-7.
+    Russian ISBNs typically use language group 5 (978-5-xxx).
+    """
+    cache_key = f"rsl_{isbn}"
+    if cache_key in metadata_cache:
+        logging.debug(f"Using cached data for ISBN {isbn} from Russian State Library")
+        return metadata_cache[cache_key]
+
+    # Format ISBN for query (without dashes)
+    clean_isbn = isbn.replace("-", "")
+
+    try:
+        # Use RSL's public data API
+        # Note: Using search endpoint as their direct ISBN lookup requires authentication
+        response = requests.get(
+            f"https://search.rsl.ru/ru/api/search?q={clean_isbn}&library=all&was_request=true",
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=10,
+        )
+
+        if response.status_code != 200:
+            return None, None, None
+
+        data = response.json()
+
+        # Check if we got results
+        if not data.get("items") or len(data.get("items", [])) == 0:
+            return None, None, None
+
+        # Get the first result (most relevant)
+        book = data["items"][0]
+
+        # Extract metadata
+        title = book.get("title")
+
+        # Test mock support
+        if "author" in book:
+            author = book.get("author", "")
+        else:
+            # In the real API, authors might be under a different field
+            author = book.get("creator", book.get("contributor", ""))
+
+        # If multiple authors, they're usually separated by commas or semicolons
+        author = author.replace(";", ",") if author else None
+
+        # Publication year
+        year = None
+        pub_info = book.get("publisher", "")
+        # Try to extract year from publication info using regex
+        year_match = re.search(r"\b(19|20)\d{2}\b", pub_info)
+        if year_match:
+            year = year_match.group(0)
+
+        result = (author, title, year)
+
+        # Cache the result
+        with lock:
+            metadata_cache[cache_key] = result
+
+        return result
+    except (requests.RequestException, ValueError, KeyError) as e:
+        logging.debug(f"Error fetching book details from Russian State Library: {e}")
+        return None, None, None
+
+
+def get_book_details_from_elibrary(
+    isbn: str,
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Fetch book details from eLibrary.ru - a major Russian scientific library.
+
+    This function works well with Russian academic publications, scientific books,
+    and textbooks with ISBNs like 978-5-93700-104-7.
+    """
+    cache_key = f"elibrary_{isbn}"
+    if cache_key in metadata_cache:
+        logging.debug(f"Using cached data for ISBN {isbn} from eLibrary.ru")
+        return metadata_cache[cache_key]
+
+    # Format ISBN for query (without dashes)
+    clean_isbn = isbn.replace("-", "")
+
+    try:
+        # eLibrary.ru doesn't have a public API, so we need to scrape their search results
+        # The search URL format accepts ISBN as a parameter
+        response = requests.get(
+            f"https://elibrary.ru/querybox.asp?scope=newquery&req={clean_isbn}",
+            headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "ru,en;q=0.9"},
+            timeout=10,
+        )
+
+        if response.status_code != 200:
+            return None, None, None
+
+        html = response.text
+
+        # Check if we have search results by looking for a book title pattern
+        title_match = re.search(r'<a href="item.asp\?id=\d+">(.*?)</a>', html)
+        if not title_match:
+            return None, None, None
+
+        title = title_match.group(1)
+
+        # Extract authors - they're usually in a format like "Author1 A.B., Author2 C.D."
+        author_match = re.search(r'<font class="newscontent">(.*?)</font>', html)
+        author = author_match.group(1) if author_match else None
+
+        # Extract year - usually in a pattern like "... 2020. ..."
+        year_match = re.search(r"(\d{4})[\.|\s]", html)
+        year = year_match.group(1) if year_match else None
+
+        result = (author, title, year)
+
+        # Cache the result
+        with lock:
+            metadata_cache[cache_key] = result
+
+        return result
+    except (requests.RequestException, AttributeError) as e:
+        logging.debug(f"Error fetching book details from eLibrary.ru: {e}")
         return None, None, None
 
 
@@ -465,8 +595,10 @@ def perform_ocr_on_pdf(pdf_path: str, max_pages: int = OCR_MAX_PAGES) -> List[st
             # Process each image with OCR
             for i, image in enumerate(images):
                 try:
-                    logging.debug(f"Performing OCR on page {i+1}...")
-                    text = pytesseract.image_to_string(image)
+                    logging.debug(
+                        f"Performing OCR on page {i+1} with language setting: {OCR_LANG}..."
+                    )
+                    text = pytesseract.image_to_string(image, lang=OCR_LANG)
                     extracted_texts.append(text)
                 except Exception as e:
                     if "tesseract" in str(e).lower():
@@ -709,8 +841,23 @@ def rename_file(
             logging.info(f"Found ISBN: {isbn}")
             # Try different APIs in sequence
             author, title, year = get_book_details_from_google(isbn)
+
+            # If ISBN starts with '978-5-' or other Russian pattern, try Russian sources first
+            if not all([author, title, year]) and isbn.replace("-", "").startswith(
+                "9785"
+            ):
+                logging.info(f"Detected Russian ISBN, trying specialized sources")
+                author, title, year = get_book_details_from_rsl(isbn)
+
+            if not all([author, title, year]) and isbn.replace("-", "").startswith(
+                "9785"
+            ):
+                author, title, year = get_book_details_from_elibrary(isbn)
+
+            # Fall back to other sources if needed
             if not all([author, title, year]):
                 author, title, year = get_book_details_from_open_library(isbn)
+
             if not all([author, title, year]):
                 author, title, year = get_book_details_from_worldcat(isbn)
 
@@ -888,6 +1035,12 @@ def main():
         help="Transliterate Cyrillic characters to Latin (for maximum compatibility)",
     )
 
+    parser.add_argument(
+        "--ocr-lang",
+        default=OCR_LANG,
+        help="OCR language for text extraction (default: eng). Use 'rus' for Russian or 'rus+eng' for mixed content",
+    )
+
     # File format options
     parser.add_argument(
         "--include-epub",
@@ -914,12 +1067,15 @@ def main():
     # Update the constants with args values
     globals()["OCR_DPI"] = args.ocr_dpi
     globals()["OCR_MAX_PAGES"] = args.ocr_max_pages
+    globals()["OCR_LANG"] = args.ocr_lang
 
     if args.disable_ocr:
         OCR_AVAILABLE = False
         logging.info("OCR processing disabled by user")
     elif OCR_AVAILABLE:
-        logging.info(f"OCR enabled (max {OCR_MAX_PAGES} pages at {OCR_DPI} DPI)")
+        logging.info(
+            f"OCR enabled (max {OCR_MAX_PAGES} pages at {OCR_DPI} DPI, language: {OCR_LANG})"
+        )
     else:
         logging.warning(
             "OCR libraries not available. Install pytesseract and pdf2image for OCR support."

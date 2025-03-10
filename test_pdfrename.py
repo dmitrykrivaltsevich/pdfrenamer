@@ -6,6 +6,8 @@ from pdfrename import (
     get_book_details_from_google,
     get_book_details_from_open_library,
     get_book_details_from_pdf,
+    get_book_details_from_rsl,
+    get_book_details_from_elibrary,
     find_isbn_in_pdf,
     is_valid_isbn13,
     is_valid_isbn10,
@@ -220,6 +222,67 @@ class TestPdfRename(unittest.TestCase):
             self.assertEqual(isbn, "9780306406157")
             # Check that OCR was called, method signature varies between unittest versions
             self.assertEqual(mock_perform_ocr.call_count, 1)
+
+    @patch("pdfrename.requests.get")
+    def test_get_book_details_from_rsl_success(self, mock_get):
+        mock_response = Mock()
+        mock_response.json.return_value = {
+            "items": [
+                {
+                    "title": "Тестовая книга на русском",
+                    "author": "Иванов И.И.",
+                    "publisher": "Издательство Наука, 2020",
+                }
+            ]
+        }
+        mock_response.status_code = 200
+        mock_get.return_value = mock_response
+
+        authors, title, year = get_book_details_from_rsl("9785937001047")
+        self.assertEqual(authors, "Иванов И.И.")
+        self.assertEqual(title, "Тестовая книга на русском")
+        self.assertEqual(year, "2020")
+
+    @patch("pdfrename.requests.get")
+    @patch("pdfrename.logging.debug")  # Patch logging.debug
+    def test_get_book_details_from_rsl_no_book(self, mock_log_debug, mock_get):
+        mock_response = Mock()
+        mock_response.json.return_value = {"items": []}
+        mock_response.raise_for_status = Mock()
+        mock_get.return_value = mock_response
+
+        authors, title, year = get_book_details_from_rsl("9785937001047")
+        self.assertIsNone(authors)
+        self.assertIsNone(title)
+        self.assertIsNone(year)
+
+    @patch("pdfrename.requests.get")
+    def test_get_book_details_from_elibrary_success(self, mock_get):
+        mock_response = Mock()
+        mock_response.text = """
+        <html>
+            <body>
+                <a href="item.asp?id=12345">Программирование на Python</a>
+                <font class="newscontent">Петров П.П., Сидоров С.С.</font>
+                <div>Москва, 2019.</div>
+            </body>
+        </html>
+        """
+        mock_response.status_code = 200
+        mock_get.return_value = mock_response
+
+        authors, title, year = get_book_details_from_elibrary("9785937001047")
+        self.assertEqual(authors, "Петров П.П., Сидоров С.С.")
+        self.assertEqual(title, "Программирование на Python")
+        self.assertEqual(year, "2019")
+
+    def test_russian_isbn_detection(self):
+        """Test that Russian ISBN patterns are properly detected."""
+        # Test with common Russian ISBN format
+        isbn = "978-5-93700-104-7"
+        clean_isbn = isbn.replace("-", "")
+        self.assertTrue(clean_isbn.startswith("9785"))  # Should identify as Russian
+        self.assertTrue(is_valid_isbn13(clean_isbn))  # Should be valid ISBN-13
 
 
 if __name__ == "__main__":

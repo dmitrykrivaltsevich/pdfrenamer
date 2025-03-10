@@ -9,11 +9,13 @@ A Python utility that automatically renames book files (PDF, EPUB) based on thei
   - EPUB files with metadata extraction
   - Extensible to support other formats via command-line
 - Extracts ISBN numbers from PDF content (supports both ISBN-10 and ISBN-13)
-- OCR support for scanned documents using Tesseract
+- OCR support for scanned documents using Tesseract (with Russian language support)
 - Fetches book metadata from multiple free sources:
   - Google Books API
   - Open Library API
   - WorldCat (web scraping)
+  - Russian State Library (RSL) catalog (for Russian books)
+  - eLibrary.ru (for Russian academic books)
   - Built-in PDF/EPUB metadata
 - Recursive directory scanning for batch processing
 - Custom naming templates via command-line options
@@ -140,11 +142,14 @@ python pdfrename.py --source-dir /path/to/books --destination-dir /path/to/outpu
 - `--disable-ocr`: Disable OCR for scanned PDFs (makes processing faster but less thorough)
 - `--ocr-dpi`: DPI for OCR image processing (default: 300). Higher values give better results but are slower
 - `--ocr-max-pages`: Maximum number of pages to OCR per document (default: 5)
+- `--ocr-lang`: OCR language for text extraction (default: eng). Use 'rus' for Russian or 'rus+eng' for mixed content
 
-> **Note**: By default, the tool uses Tesseract's English language model. For other languages, install the appropriate Tesseract language packages:
+> **Note**: For languages other than English, install the appropriate Tesseract language packages:
 > - Ubuntu/Debian: `sudo apt-get install tesseract-ocr-rus tesseract-ocr-deu tesseract-ocr-fra`
 > - macOS: `brew install tesseract-lang`
 > - Windows: Select additional languages during installation
+>
+> For Russian books, use `--ocr-lang rus` or `--ocr-lang rus+eng` for mixed content
 
 ### Format Templates
 
@@ -185,6 +190,29 @@ Output file: `2020 - John Smith. Introduction to Programming.2020.pdf`
 Input file: `book123.epub`
 Output file: `2021 - Jane Doe. Advanced Machine Learning.2021.epub`
 
+### Russian Book Example
+Input file: `книга.pdf` (with ISBN 978-5-93700-104-7)
+Output file: `2018 - Иванов И.И. Программирование на Python.2018.pdf`
+
+## Russian Book Support
+
+The tool has special support for Russian language books:
+
+1. Specialized metadata sources for Russian ISBNs (books with 978-5-xxx pattern):
+   - Russian State Library (RSL) catalog
+   - eLibrary.ru for academic books
+
+2. OCR support for Russian text:
+   - Use `--ocr-lang rus` for Russian-only documents
+   - Use `--ocr-lang rus+eng` for mixed Russian/English content
+   - Install the Russian language pack for Tesseract:
+     - Ubuntu/Debian: `sudo apt-get install tesseract-ocr-rus`
+     - macOS: `brew install tesseract-lang`
+     - Windows: Select Russian during Tesseract installation
+
+3. Proper Cyrillic filename handling:
+   - By default, Cyrillic characters are preserved in filenames
+   - Use `--transliterate-cyrillic` if your system has issues with Cyrillic filenames
 
 ## License
 
