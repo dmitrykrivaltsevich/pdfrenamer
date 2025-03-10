@@ -16,6 +16,7 @@ A Python utility that automatically renames book files (PDF, EPUB) based on thei
   - WorldCat (web scraping)
   - Russian State Library (RSL) catalog (for Russian books)
   - eLibrary.ru (for Russian academic books)
+  - Anna's Archive (comprehensive catalog for many languages)
   - Built-in PDF/EPUB metadata
 - Recursive directory scanning for batch processing
 - Custom naming templates via command-line options
@@ -201,6 +202,7 @@ The tool has special support for Russian language books:
 1. Specialized metadata sources for Russian ISBNs (books with 978-5-xxx pattern):
    - Russian State Library (RSL) catalog
    - eLibrary.ru for academic books
+   - Anna's Archive (provides excellent coverage for Russian literature)
 
 2. OCR support for Russian text:
    - Use `--ocr-lang rus` for Russian-only documents

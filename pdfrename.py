@@ -393,6 +393,126 @@ def get_book_details_from_elibrary(
         return None, None, None
 
 
+def get_book_details_from_annas_archive(
+    isbn: str,
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Fetch book details from Anna's Archive (annas-archive.org).
+    
+    Anna's Archive is a search engine for shadow libraries that often has good
+    metadata for books in multiple languages, including Russian.
+    """
+    cache_key = f"annas_{isbn}"
+    if cache_key in metadata_cache:
+        logging.debug(f"Using cached data for ISBN {isbn} from Anna's Archive")
+        return metadata_cache[cache_key]
+    
+    # Format ISBN for query (without dashes)
+    clean_isbn = isbn.replace("-", "")
+    
+    try:
+        # Use Anna's Archive search with the ISBN
+        response = requests.get(
+            f"https://annas-archive.org/search?q={clean_isbn}",
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+                "Accept-Language": "en-US,en;q=0.9,ru;q=0.8"
+            },
+            timeout=15,  # Longer timeout for potentially slower responses
+        )
+        
+        if response.status_code != 200:
+            return None, None, None
+            
+        html = response.text
+        logging.debug(f"Got response from Anna's Archive, length: {len(html)}")
+        
+        # Look for book entries - these are in a div with class h-[110px]
+        book_entries = re.findall(r'<div class="h-\[110px\][^>]*>.*?</div>\s*</div>\s*</a>\s*</div>', html, re.DOTALL)
+        
+        if not book_entries:
+            logging.debug("No book entries found in Anna's Archive response")
+            return None, None, None
+            
+        logging.debug(f"Found {len(book_entries)} book entries")
+        
+        # We'll use the first book entry for extraction
+        book_entry = book_entries[0]
+        
+        # Extract title - it's in an h3 tag
+        title_match = re.search(r'<h3[^>]*>(.*?)</h3>', book_entry)
+        title = None
+        if title_match:
+            title = re.sub(r'<.*?>', '', title_match.group(1)).strip()
+            logging.debug(f"Extracted title: {title}")
+        
+        # Extract publication info (contains year) - it's in a div with class "truncate"
+        year = None
+        pub_info_match = re.search(r'<div class="truncate[^"]*"[^>]*>(.*?)</div>', book_entry)
+        if pub_info_match:
+            pub_info = pub_info_match.group(1).strip()
+            logging.debug(f"Extracted publication info: {pub_info}")
+            # Extract year from publication info
+            year_match = re.search(r'\b(19|20)\d{2}\b', pub_info)
+            if year_match:
+                year = year_match.group(0)
+                logging.debug(f"Extracted year: {year}")
+        
+        # Extract author - it's in a div with class containing "italic"
+        author = None
+        author_match = re.search(r'<div[^>]*class="[^"]*italic[^"]*"[^>]*>(.*?)</div>', book_entry)
+        if author_match:
+            author = re.sub(r'<.*?>', '', author_match.group(1)).strip()
+            logging.debug(f"Extracted author: {author}")
+        
+        # If we still don't have all the info, try using the metadata line
+        metadata_match = re.search(r'<div class="line-clamp-\[2\][^"]*"[^>]*>(.*?)</div>', book_entry)
+        if metadata_match:
+            metadata = metadata_match.group(1).strip()
+            logging.debug(f"Extracted metadata line: {metadata}")
+            
+            # Try to find language and publisher info
+            if "ru" in metadata or "Russian" in metadata:
+                logging.debug("Book appears to be in Russian")
+                
+            # If we didn't find a year yet, try to find it in the metadata
+            if not year:
+                year_match = re.search(r'\b(19|20)\d{2}\b', metadata)
+                if year_match:
+                    year = year_match.group(0)
+                    logging.debug(f"Found year in metadata: {year}")
+        
+        # Last resort for title and author
+        if not title or not author:
+            link_match = re.search(r'<a href="/md5/[^"]*"[^>]*>(.*?)</a>', book_entry, re.DOTALL)
+            if link_match:
+                link_content = link_match.group(1)
+                logging.debug(f"Examining link content for title/author: {link_content[:100]}")
+                
+                if not title:
+                    title_match = re.search(r'font-bold">(.*?)</', link_content)
+                    if title_match:
+                        title = title_match.group(1).strip()
+                        logging.debug(f"Extracted title from link: {title}")
+                
+                if not author:
+                    author_match = re.search(r'italic">(.*?)</div>', link_content)
+                    if author_match:
+                        author = author_match.group(1).strip()
+                        logging.debug(f"Extracted author from link: {author}")
+        
+        result = (author, title, year)
+        logging.info(f"Anna's Archive results: Author={author}, Title={title}, Year={year}")
+        
+        # Cache the result
+        with lock:
+            metadata_cache[cache_key] = result
+            
+        return result
+    except (requests.RequestException, AttributeError) as e:
+        logging.debug(f"Error fetching book details from Anna's Archive: {e}")
+        return None, None, None
+
+
 def get_book_details_from_epub(
     epub_path: str,
 ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -853,6 +973,11 @@ def rename_file(
                 "9785"
             ):
                 author, title, year = get_book_details_from_elibrary(isbn)
+                
+            # Try Anna's Archive for all books (especially good for Russian books)
+            if not all([author, title, year]):
+                logging.info(f"Trying Anna's Archive for ISBN: {isbn}")
+                author, title, year = get_book_details_from_annas_archive(isbn)
 
             # Fall back to other sources if needed
             if not all([author, title, year]):
